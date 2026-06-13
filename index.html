@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>THEY SPEAK ITALIAN</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background:#000;
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      min-height:100vh; overflow:hidden;
+      touch-action:none; -webkit-touch-callout:none; user-select:none;
+    }
+    canvas {
+      display:block;
+      image-rendering:pixelated;
+      image-rendering:crisp-edges;
+      cursor:pointer;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ── EGA 16 COLORS ─────────────────────────────────────────────────────────
+const C = {
+  BLK:'#000000', BLU:'#0000AA', GRN:'#00AA00', CYN:'#00AAAA',
+  RED:'#AA0000', MAG:'#AA00AA', BRN:'#AA5500', LGY:'#AAAAAA',
+  DGY:'#555555', LBL:'#5555FF', LGN:'#55FF55', LCY:'#55FFFF',
+  LRD:'#FF5555', LMG:'#FF55FF', YLW:'#FFFF55', WHT:'#FFFFFF',
+};
+
+// ── CANVAS ────────────────────────────────────────────────────────────────
+const NW=320, NH=200;
+const cv = document.getElementById('c');
+const cx = cv.getContext('2d');
+function resize() {
+  const s = Math.max(1, Math.min(window.innerWidth/NW, window.innerHeight/NH));
+  cv.width=Math.round(NW*s); cv.height=Math.round(NH*s);
+  cx.setTransform(s,0,0,s,0,0);
+  cx.imageSmoothingEnabled=false;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── AUDIO ─────────────────────────────────────────────────────────────────
+const bgm = new Audio("the-dons-lullaby.mp3");
+bgm.loop=true; bgm.volume=0.55;
+let ac=null;
+function getAC() {
+  if (!ac) ac = new (window.AudioContext||window.webkitAudioContext)();
+  if (ac.state==='suspended') ac.resume();
+  return ac;
+}
+function beep(freq0, freq1, dur, vol=0.28, type='square') {
+  const a=getAC(), o=a.createOscillator(), g=a.createGain();
+  o.connect(g); g.connect(a.destination);
+  o.type=type;
+  o.frequency.setValueAtTime(freq0, a.currentTime);
+  if (freq1!==freq0) o.frequency.exponentialRampToValueAtTime(freq1, a.currentTime+dur*0.9);
+  g.gain.setValueAtTime(vol, a.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+dur);
+  o.start(); o.stop(a.currentTime+dur);
+}
+function sfxJump()   { beep(280,560,0.12,0.22); }
+function sfxHit()    { beep(380,55,0.22,0.32); }
+function sfxPickup() { beep(520,820,0.09,0.16); }
+function sfxLevelUp(){
+  [523,659,784,1047].forEach((f,i)=>{
+    const a=getAC(), o=a.createOscillator(), g=a.createGain();
+    o.connect(g); g.connect(a.destination); o.type='square';
+    const t=a.currentTime+i*0.13;
+    o.frequency.setValueAtTime(f,t);
+    g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.18);
+    o.start(t); o.stop(t+0.18);
+  });
+}
+function sfxWin(){
+  [392,523,659,784,1047,784,1047].forEach((f,i)=>{
+    const a=getAC(), o=a.createOscillator(), g=a.createGain();
+    o.connect(g); g.connect(a.destination); o.type='square';
+    const t=a.currentTime+i*0.12;
+    o.frequency.setValueAtTime(f,t);
+    g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+    o.start(t); o.stop(t+0.15);
+  });
+}
+function playMusic() { bgm.currentTime=0; bgm.play().catch(()=>{}); }
+function stopMusic() { bgm.pause(); bgm.currentTime=0; }
+
+// ── HELPERS ───────────────────────────────────────────────────────────────
+const r=(x,y,w,h,col)=>{ cx.fillStyle=col; cx.fillRect(~~x,~~y,w,h); };
+function txt(s,x,y,col,sz=8){ cx.fillStyle=col; cx.font=sz+"px 'Courier New',monospace"; cx.fillText(s,x,y); }
+function txtC(s,y,col,sz=8){ cx.textAlign='center'; txt(s,NW/2,y,col,sz); cx.textAlign='left'; }
+function pad(n,l=6){ return String(n).padStart(l,'0'); }
+function aabb(a,b){ return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y; }
+
+// ── LEVELS ────────────────────────────────────────────────────────────────
+const LEVEL_GOAL = 5500;
+const LEVELS = [
+  { name:'COMO LAKE',         sub:'ZOMBIE HOLIDAY RESORT' },
+  { name:'SUPERMARKET',      sub:'NO CARBS IN AISLE 3'   },
+  { name:'THE ITALIAN RIVIERA', sub:"DEAD MAN'S BEACH"   },
+  { name:'VATICAN CITY',     sub:'HOLY CARB RECKONING'   },
+];
+
+// ── GAME STATE ────────────────────────────────────────────────────────────
+const GY=155, GRAV=0.45, JF=-8.5, SPD0=2.2, LEVEL_DRAIN_BONUS=0.012;
+let mode='title', tick=0, dist=0, score=0, hiScore=0;
+let carb=100, speed=SPD0, drain=0.055, flashHit=0;
+let lv=0, lvClearTick=0;
+const P={x:50,y:GY-20,w:12,h:20,vy:0,gnd:true,leg:0,legT:0};
+let enemies=[], pickups=[], parts=[], clouds=[], bldgs=[], gdots=[];
+
+function initLevel(newLv) {
+  lv=newLv; mode='levelstart'; tick=0; dist=0;
+  carb=100; speed=SPD0+(lv*0.3); drain=0.055+lv*LEVEL_DRAIN_BONUS; flashHit=0;
+  enemies=[]; pickups=[]; parts=[];
+  P.x=50; P.y=GY-P.h; P.vy=0; P.gnd=true; P.leg=0;
+  clouds=Array.from({length:5},(_,i)=>({x:i*70+10,y:18+(i%3)*12,w:32+(i*7)%22}));
+  bldgs=Array.from({length:8},(_,i)=>({x:i*45,y:GY-35-(i*13)%46,w:22+(i*9)%19,c:[C.DGY,C.BLU,C.MAG,C.DGY,C.CYN][i%5]}));
+  gdots=Array.from({length:20},(_,i)=>({x:i*18}));
+  playMusic();
+}
+
+function startGame() { score=0; mode='instructions'; tick=0; }
+function nextLevel()  { score+=Math.floor(carb*10); initLevel(lv+1); }
+
+// ── SPAWN ─────────────────────────────────────────────────────────────────
+function spawnEnemy() {
+  enemies.push({x:NW+12,y:GY-24,w:14,h:24,spd:speed+Math.random()*0.7,type:Math.random()<0.28?'mafia':'zombie',t:0});
+}
+function spawnPickup() {
+  const roll=Math.random(), type=roll<0.15?'pizza':roll<0.45?'bread':'pasta';
+  const vals={pasta:12,bread:18,pizza:28};
+  pickups.push({x:NW+10,y:Math.random()<0.5?GY-46-Math.random()*14:GY-22,w:11,h:11,type,val:vals[type],t:0});
+}
+function burst(x,y,col,n=7){
+  for(let i=0;i<n;i++){const a=Math.random()*Math.PI*2,s=1+Math.random()*2.5;
+    parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,col,life:22+Math.random()*18});}
+}
+
+// ── SPRITES ───────────────────────────────────────────────────────────────
+function drawPlayer(){
+  const p=P, lp=p.gnd?p.leg:0;
+  r(p.x+2,GY+1,p.w-4,2,C.BLK);
+  r(p.x+1,p.y+14,5,6,C.BLU); r(p.x+6,p.y+14+(lp?-2:2),5,6,C.BLU);
+  r(p.x,p.y+19+(lp?-2:0),6,3,C.BLK); r(p.x+5,p.y+19+(lp?2:0),6,3,C.BLK);
+  r(p.x+1,p.y+8,10,7,C.CYN); r(p.x+4,p.y+8,4,2,C.WHT);
+  r(p.x-1,p.y+8,3,6,C.YLW); r(p.x+10,p.y+9,3,5,C.YLW);
+  r(p.x+2,p.y,8,9,C.YLW); r(p.x+2,p.y,8,2,C.BRN);
+  r(p.x+3,p.y+3,2,2,C.BLK); r(p.x+7,p.y+3,2,2,C.BLK);
+  r(p.x+4,p.y+6,4,1,C.BRN);
+}
+function drawZombie(e){
+  const lp=Math.floor(e.t/5)%2;
+  r(e.x+2,GY+1,e.w-4,2,C.BLK);
+  r(e.x+1,e.y+16,5,8,C.DGY); r(e.x+7,e.y+16+(lp?2:-2),5,8,C.DGY);
+  r(e.x+1,e.y+8,12,9,C.GRN);
+  r(e.x+2,e.y+11,2,5,C.BLK); r(e.x+9,e.y+12,2,4,C.BLK);
+  r(e.x-4,e.y+8,5,3,C.LGN); r(e.x+13,e.y+8,5,3,C.LGN);
+  for(let i=0;i<3;i++) r(e.x-5+i*2,e.y+6,1,3,C.LGN);
+  r(e.x+2,e.y,10,9,C.LGN);
+  r(e.x+3,e.y+2,2,2,C.LRD); r(e.x+8,e.y+2,2,2,C.LRD);
+  r(e.x+3,e.y+6,7,2,C.BLK);
+  r(e.x+4,e.y+6,1,2,C.YLW); r(e.x+7,e.y+6,1,2,C.YLW);
+  if(e.t%40<20) r(e.x+6,e.y+8,1,3,C.LRD);
+}
+function drawMafia(e){
+  const lp=Math.floor(e.t/4)%2;
+  r(e.x+2,GY+1,e.w-4,2,C.BLK);
+  r(e.x+1,e.y+16,5,8,C.BLK); r(e.x+7,e.y+16+(lp?-2:2),5,8,C.BLK);
+  r(e.x,e.y+23+(lp?-2:0),6,2,C.DGY); r(e.x+6,e.y+23+(lp?2:0),6,2,C.DGY);
+  r(e.x+1,e.y+8,12,9,C.BLK);
+  r(e.x+5,e.y+9,4,7,C.WHT); r(e.x+6,e.y+10,2,6,C.LRD);
+  r(e.x-1,e.y+9,3,7,C.BLK); r(e.x+12,e.y+9,3,7,C.BLK);
+  r(e.x-2,e.y+15,4,3,C.YLW); r(e.x+12,e.y+15,4,3,C.YLW);
+  r(e.x+2,e.y+1,10,8,C.YLW);
+  r(e.x,e.y-1,14,2,C.BLK); r(e.x+2,e.y-7,10,7,C.BLK); r(e.x+2,e.y-2,10,1,C.WHT);
+  r(e.x+3,e.y+3,2,2,C.BLK); r(e.x+8,e.y+3,2,2,C.BLK);
+  r(e.x+3,e.y+6,8,2,C.BLK);
+}
+function drawPickup(pk){
+  const bob=Math.sin(pk.t*0.09)*2.5, y=pk.y+bob;
+  if(pk.type==='pasta'){
+    r(pk.x+1,y+5,9,5,C.LGY); r(pk.x,y+7,11,4,C.LGY);
+    r(pk.x+2,y+2,7,5,C.YLW); r(pk.x+3,y+1,5,7,C.YLW); r(pk.x+4,y,3,8,C.YLW);
+    r(pk.x+3,y+3,2,2,C.LRD); r(pk.x+6,y+4,2,2,C.LRD);
+  } else if(pk.type==='bread'){
+    r(pk.x+1,y+4,9,6,C.BRN); r(pk.x+2,y+1,7,5,C.BRN);
+    r(pk.x+3,y,5,3,C.YLW); r(pk.x+2,y+3,7,1,C.YLW);
+  } else {
+    r(pk.x+1,y+1,9,9,C.BRN); r(pk.x+2,y+2,7,7,C.YLW);
+    r(pk.x+3,y+3,3,3,C.LRD); r(pk.x+6,y+5,2,2,C.LRD);
+    r(pk.x+3,y+3,2,2,C.WHT); r(pk.x+6,y+5,1,1,C.LGN);
+  }
+}
+
+// ── LEVEL BACKGROUNDS ─────────────────────────────────────────────────────
+function bgComo(){
+  r(0,0,NW,80,C.BLU); r(0,80,NW,GY-80,C.LBL);
+  // mountains
+  const ms=[{x:0,h:50},{x:50,h:72},{x:100,h:44},{x:150,h:68},{x:205,h:56},{x:255,h:74},{x:295,h:38}];
+  for(const m of ms){
+    for(let s=0;s<m.h;s+=2){const ww=Math.max(2,((m.h-s)*1.3)|0); r(m.x-ww/2+15,GY-m.h-18+s,ww,2,C.DGY);}
+    for(let s=0;s<12;s+=2){const ww=Math.max(1,((12-s)*1.3)|0); r(m.x-ww/2+15,GY-m.h-18+s,ww,2,C.WHT);}
+  }
+  r(0,GY-18,NW,18,C.CYN);
+  for(let wx=(dist*0.3|0)%24-24;wx<NW;wx+=24){r(wx,GY-16,12,2,C.LCY); r(wx+12,GY-12,8,2,C.LCY);}
+  for(const cl of clouds){r(cl.x,cl.y,cl.w,7,C.LGY);r(cl.x+4,cl.y-4,cl.w-8,6,C.LGY);r(cl.x+8,cl.y-7,cl.w-16,5,C.WHT);}
+  r(0,GY,NW,NH-GY,C.BRN); r(0,GY,NW,3,C.LGY);
+  for(const g of gdots) r(g.x,GY+8,12,2,C.LGY);
+}
+function bgMarket(){
+  r(0,0,NW,NH,C.BLU);
+  r(0,0,NW,16,C.BLK);
+  for(let lx=20;lx<NW;lx+=62){r(lx,2,42,8,C.YLW);r(lx+2,10,38,2,C.WHT);}
+  for(const b of bldgs){
+    r(b.x,28,b.w,GY-28,C.BRN);
+    for(let sy=33;sy<GY-8;sy+=28){
+      r(b.x,sy,b.w,3,C.YLW);
+      for(let px=b.x+2;px<b.x+b.w-4;px+=6){
+        const empty=((px*3+sy*7+(dist/20|0))%5===0);
+        if(!empty) r(px,sy-9,4,9,[C.LRD,C.LGN,C.LBL,C.YLW,C.LMG][(px+sy)%5]);
+      }
+    }
+  }
+  r(0,GY,NW,NH-GY,C.LGY);
+  for(let tx=0;tx<NW;tx+=16) r(tx,GY,1,NH-GY,C.DGY);
+  for(let ty=GY;ty<NH;ty+=12) r(0,ty,NW,1,C.DGY);
+  r(0,GY,NW,2,C.WHT);
+  for(const g of gdots) r(g.x,GY+8,12,2,C.WHT);
+}
+function bgBeach(){
+  r(0,0,NW,75,C.LCY); r(0,75,NW,GY-75,C.CYN);
+  r(NW-30,6,20,20,C.YLW);
+  r(NW-26,2,12,6,C.YLW); r(NW-26,24,12,6,C.YLW);
+  r(NW-34,10,6,8,C.YLW); r(NW-10,10,6,8,C.YLW);
+  for(let wx=(dist*0.4|0)%32-32;wx<NW;wx+=32){
+    r(wx,GY-30,18,3,C.WHT); r(wx+16,GY-22,12,2,C.WHT); r(wx+6,GY-15,14,2,C.LCY);
+  }
+  for(const b of bldgs){
+    r(b.x+8,GY-32,3,24,C.YLW);
+    for(let s=0;s<4;s++) r(b.x+s*5,GY-40,5,9,[C.LRD,C.YLW,C.LRD,C.YLW][s]);
+    r(b.x,GY-41,20,2,C.LGY);
+  }
+  for(const cl of clouds){r(cl.x,cl.y,cl.w,8,C.WHT);r(cl.x+4,cl.y-5,cl.w-8,7,C.WHT);}
+  r(0,GY,NW,NH-GY,C.YLW); r(0,GY,NW,3,C.BRN);
+  for(const g of gdots) r(g.x,GY+8,12,2,C.BRN);
+}
+function bgVatican(){
+  r(0,0,NW,NH,C.BLK); r(0,0,NW,55,C.MAG); r(0,55,NW,GY-55,C.RED);
+  for(let fx=0;fx<NW;fx+=24){
+    const fh=8+(Math.sin(tick*0.06+fx*0.2)*5)|0;
+    r(fx,GY-fh,18,fh,C.LRD); r(fx+3,GY-fh-5,12,6,C.YLW);
+  }
+  // dome
+  r(108,42,80,GY-42,C.DGY);
+  for(let dc=0;dc<38;dc+=2){
+    const dw=Math.max(2,(Math.sqrt(Math.max(0,361-(dc-19)*(dc-19)))*2.2)|0);
+    r(148-dw/2,22+dc,dw,2,C.DGY);
+  }
+  r(145,16,6,12,C.DGY); r(140,20,16,3,C.DGY);
+  // columns
+  for(const b of bldgs){
+    r(b.x+6,GY-52,8,52,C.LGY); r(b.x+4,GY-55,12,5,C.WHT); r(b.x+4,GY-4,12,4,C.WHT);
+  }
+  r(0,GY,NW,NH-GY,C.LGY);
+  for(let tx=0;tx<NW;tx+=20) r(tx,GY,1,NH-GY,C.WHT);
+  r(0,GY,NW,2,C.WHT);
+  for(const g of gdots) r(g.x,GY+8,12,2,C.WHT);
+}
+
+const BG_FNS=[bgComo,bgMarket,bgBeach,bgVatican];
+
+// ── HUD ───────────────────────────────────────────────────────────────────
+function drawHUD(){
+  r(0,0,NW,11,C.BLK); r(0,11,NW,1,C.DGY);
+  txt('THEY SPEAK ITALIAN',3,9,C.YLW,8);
+  // level progress bar top-right
+  const PW=80, prog=Math.min(1,dist/LEVEL_GOAL);
+  r(NW-PW-2,1,PW,9,C.DGY);
+  r(NW-PW-2,1,Math.floor(prog*PW),9,C.LBL);
+  const arrowX=(NW-PW-2+Math.floor(prog*PW)-3)|0;
+  txt('>',arrowX,9,C.YLW,8);
+  txt('L'+(lv+1),NW-PW-12,9,C.LCY,8);
+
+  r(0,NH-13,NW,13,C.BLK); r(0,NH-13,NW,1,C.DGY);
+  txt('CARBS:',2,NH-3,C.LGY,8);
+  const BX=46,BY=NH-11,BW=160,BH=8;
+  r(BX,BY,BW,BH,C.DGY);
+  const fill=Math.max(0,Math.floor(carb/100*BW));
+  const bc=carb>50?C.LGN:carb>25?C.YLW:C.LRD;
+  if(fill>0) r(BX,BY,fill,BH,bc);
+  r(BX,BY,BW,1,C.LGY);
+  txt(Math.ceil(carb)+'%',BX+BW+3,NH-3,bc,8);
+  txt('HI:'+pad(hiScore),NW-56,NH-3,C.LCY,8);
+
+  if(flashHit>0){
+    cx.globalAlpha=flashHit/10*0.35; r(0,0,NW,NH,C.LRD); cx.globalAlpha=1;
+    flashHit--;
+  }
+}
+
+// ── SCREENS ───────────────────────────────────────────────────────────────
+function drawTitle(){
+  bgComo();
+  r(25,30,NW-50,140,C.BLK);
+  for(let x=27;x<NW-27;x+=6){r(x,30,3,1,C.CYN);r(x,169,3,1,C.CYN);}
+  r(25,30,1,140,C.CYN); r(NW-26,30,1,140,C.CYN);
+  // presenter
+  cx.textAlign='center';
+  cx.fillStyle=C.DGY; cx.font="7px 'Courier New',monospace";
+  cx.fillText('- VINCENZO SALVIA PRESENTS -',NW/2,56);
+  cx.textAlign='left';
+  cx.font="bold 16px 'Courier New',monospace";
+  cx.textAlign='center'; cx.fillStyle=C.YLW; cx.fillText('THEY SPEAK',NW/2,98);
+  cx.fillStyle=C.LRD; cx.fillText('ITALIAN',NW/2,116); cx.textAlign='left';
+  txtC('A MINI HORROR STORY ABOUT CARBS',128,C.LGY,7);
+  if(Math.floor(tick/25)%2===0) txtC('[ PRESS ENTER OR CLICK TO PLAY ]',148,C.WHT,8);
+  txtC('SPACE / CLICK / TAP = JUMP',161,C.DGY,7);
+}
+
+function drawLevelBanner(){
+  if(mode==='levelstart'){
+    cx.globalAlpha=0.88; r(0,60,NW,80,C.BLK); cx.globalAlpha=1;
+    r(0,60,NW,1,C.CYN); r(0,139,NW,1,C.CYN);
+    const ldata=LEVELS[lv];
+    txtC('LEVEL '+(lv+1),82,C.YLW,10);
+    txtC(ldata.name,97,C.LCY,9);
+    txtC(ldata.sub,110,C.LGY,7);
+    if(Math.floor(tick/25)%2===0) txtC('[ CLICK / TAP TO START ]',130,C.WHT,7);
+  }
+}
+
+function drawLevelClear(){
+  cx.globalAlpha=0.8; r(0,0,NW,NH,C.BLK); cx.globalAlpha=1;
+  r(30,55,NW-60,95,C.BLK);
+  r(30,55,NW-60,1,C.LGN); r(30,149,NW-60,1,C.LGN);
+  txtC('LEVEL CLEAR!',78,C.LGN,12);
+  txtC(LEVELS[lv].name,94,C.LCY,9);
+  if(lv<3){
+    txtC('NEXT STOP:',112,C.LGY,8);
+    txtC(LEVELS[lv+1].name,124,C.YLW,9);
+  }
+  if(Math.floor(lvClearTick/25)%2===0)
+    txtC('[ ENTER / CLICK TO CONTINUE ]',143,C.WHT,7);
+}
+
+function drawInstructions(){
+  r(0,0,NW,NH,C.BLK);
+  // top border
+  r(0,0,NW,1,C.CYN); r(0,NH-1,NW,1,C.CYN);
+
+  // header
+  r(0,0,NW,12,C.BLK);
+  txtC('HOW TO PLAY',10,C.YLW,9);
+  r(0,12,NW,1,C.DGY);
+
+  // story blurb
+  txtC('Italy has run out of CARBS.',26,C.LGY,7);
+  txtC('The population turned into zombies.',36,C.LGY,7);
+  txtC('Run through 4 locations and survive.',46,C.LGY,7);
+
+  r(10,53,NW-20,1,C.DGY);
+
+  // controls
+  txt('CONTROLS',14,63,C.LCY,8);
+  txt('SPACE / CLICK / TAP',14,76,C.WHT,7);
+  txt('= JUMP',140,76,C.LGY,7);
+  txt('Avoid enemies. Collect food.',14,88,C.WHT,7);
+  txt('Reach the finish line!',14,99,C.WHT,7);
+
+  r(10,105,NW-20,1,C.DGY);
+
+  // collectibles header
+  txt('COLLECTIBLES',14,116,C.LCY,8);
+
+  // pasta icon + text
+  const ix=14, iy=121;
+  // pasta
+  r(ix+1,iy+5,9,5,C.LGY); r(ix,iy+7,11,4,C.LGY);
+  r(ix+2,iy+2,7,5,C.YLW); r(ix+3,iy+1,5,7,C.YLW); r(ix+4,iy,3,8,C.YLW);
+  r(ix+3,iy+3,2,2,C.LRD); r(ix+6,iy+4,2,2,C.LRD);
+  txt('PASTA',ix+14,iy+9,C.YLW,8);
+  txt('+12 CARBS',ix+66,iy+9,C.LGN,7);
+
+  // bread icon
+  const bx=ix, by=iy+17;
+  r(bx+1,by+4,9,6,C.BRN); r(bx+2,by+1,7,5,C.BRN);
+  r(bx+3,by,5,3,C.YLW); r(bx+2,by+3,7,1,C.YLW);
+  txt('BREAD',bx+14,by+9,C.BRN,8);
+  txt('+18 CARBS',bx+66,by+9,C.LGN,7);
+
+  // pizza icon
+  const px2=ix, py=by+17;
+  r(px2+1,py+1,9,9,C.BRN); r(px2+2,py+2,7,7,C.YLW);
+  r(px2+3,py+3,3,3,C.LRD); r(px2+6,py+5,2,2,C.LRD);
+  r(px2+3,py+3,2,2,C.WHT); r(px2+6,py+5,1,1,C.LGN);
+  txt('PIZZA',px2+14,py+9,C.LRD,8);
+  txt('+28 CARBS',px2+66,py+9,C.LGN,7);
+
+  r(10,py+16,NW-20,1,C.DGY);
+
+  // enemies
+  txt('ENEMIES',14,py+27,C.LCY,8);
+  txt('ZOMBIE',14,py+39,C.LGN,7);
+  txt('-22 CARBS on hit',66,py+39,C.LRD,7);
+  txt('MAFIOSO',14,py+50,C.LGY,7);
+  txt('-22 CARBS on hit',66,py+50,C.LRD,7);
+
+  r(10,py+57,NW-20,1,C.DGY);
+
+  // levels
+  txt('THE 4 LEVELS',14,py+67,C.LCY,8);
+  ['COMO LAKE','SUPERMARKET','THE ITALIAN RIVIERA','VATICAN CITY'].forEach((n,i)=>{
+    txt((i+1)+'. '+n, 14, py+78+i*10, C.LGY, 7);
+  });
+
+  // blinking start
+  if(Math.floor(tick/25)%2===0) txtC('[ CLICK / TAP TO START ]',NH-5,C.WHT,8);
+}
+
+function drawGameOver(){
+  cx.globalAlpha=0.74; r(0,0,NW,NH,C.BLK); cx.globalAlpha=1;
+  r(30,52,NW-60,100,C.BLK);
+  r(30,52,NW-60,1,C.LRD); r(30,151,NW-60,1,C.LRD);
+  txtC('YOU BECAME ONE OF THEM.',74,C.LRD,9);
+  txtC('SCORE: '+pad(score),98,C.WHT,8);
+  txtC('HI-SCORE: '+pad(hiScore),112,C.LCY,8);
+  if(Math.floor(tick/25)%2===0) txtC('[ ENTER / CLICK TO RETRY ]',140,C.LGY,8);
+}
+
+function drawWin(){
+  cx.globalAlpha=0.8; r(0,0,NW,NH,C.BLK); cx.globalAlpha=1;
+  r(15,30,NW-30,140,C.BLK);
+  r(15,30,NW-30,1,C.YLW); r(15,169,NW-30,1,C.YLW);
+  cx.font="bold 10px 'Courier New',monospace"; cx.textAlign='center';
+  cx.fillStyle=C.YLW; cx.fillText('ITALY IS SAVED.',NW/2,54); cx.textAlign='left';
+  txtC('(FOR NOW.)',66,C.LGY,8);
+  txtC('The Influenzati did it again.',84,C.LCY,7);
+  txtC('Spaghetti for everyone.',95,C.LGY,7);
+  txtC('FINAL SCORE: '+pad(score),115,C.YLW,9);
+  txtC('HI-SCORE: '+pad(hiScore),130,C.LCY,8);
+  if(Math.floor(tick/25)%2===0) txtC('[ ENTER / CLICK TO PLAY AGAIN ]',155,C.WHT,7);
+}
+
+// ── UPDATE ────────────────────────────────────────────────────────────────
+function update(){
+  tick++;
+  if(mode==='levelclear'){ lvClearTick++; return; }
+  if(mode==='levelstart'||mode==='instructions'||mode==='title'||mode==='over'||mode==='win') return;
+
+  dist+=speed;
+  score=Math.floor(dist/8)+Math.floor(carb);
+  speed=SPD0+(lv*0.3)+Math.floor(dist/900)*0.25;
+  drain=0.055+lv*LEVEL_DRAIN_BONUS+Math.floor(dist/2000)*0.006;
+
+  // level complete
+  if(dist>=LEVEL_GOAL){
+    sfxLevelUp();
+    if(lv===3){
+      score+=Math.floor(carb*15); if(score>hiScore) hiScore=score;
+      mode='win'; tick=0; stopMusic(); sfxWin(); return;
+    }
+    mode='levelclear'; lvClearTick=0;
+    return;
+  }
+
+  carb=Math.max(0,carb-drain);
+  if(carb<=0){
+    if(score>hiScore) hiScore=score;
+    mode='over'; tick=0; stopMusic(); sfxHit(); return;
+  }
+
+  // player
+  P.vy+=GRAV; P.y+=P.vy;
+  if(P.y>=GY-P.h){P.y=GY-P.h;P.vy=0;P.gnd=true;} else P.gnd=false;
+  if(P.gnd){P.legT++;if(P.legT>5){P.leg=1-P.leg;P.legT=0;}}
+
+  // scroll clouds
+  for(const cl of clouds){cl.x-=speed*0.25;if(cl.x+cl.w<0)cl.x=NW+10;}
+  // scroll buildings
+  for(const b of bldgs){
+    b.x-=speed*0.45;
+    if(b.x+b.w<0){b.x=NW+5;b.y=GY-36-(Math.random()*45|0);b.w=22+(Math.random()*19|0);b.c=[C.DGY,C.BLU,C.MAG,C.DGY,C.CYN][Math.random()*5|0];}
+  }
+  for(const g of gdots){g.x-=speed;if(g.x<-14)g.x+=NW+14;}
+
+  // spawn
+  const eI=Math.max(52,128-Math.floor(dist/400)*6);
+  if(tick%eI===0) spawnEnemy();
+  const pI=Math.max(42,98-Math.floor(dist/600)*5);
+  if(tick%pI===0) spawnPickup();
+
+  // enemy update
+  const ph={x:P.x+2,y:P.y+2,w:P.w-4,h:P.h-4};
+  for(let i=enemies.length-1;i>=0;i--){
+    const e=enemies[i]; e.x-=e.spd; e.t++;
+    const eh={x:e.x+3,y:e.y+3,w:e.w-6,h:e.h-6};
+    if(aabb(ph,eh)){
+      carb=Math.max(0,carb-22); flashHit=10;
+      burst(e.x+7,e.y+12,C.LRD); enemies.splice(i,1); sfxHit(); continue;
+    }
+    if(e.x<-22) enemies.splice(i,1);
+  }
+  // pickup update
+  for(let i=pickups.length-1;i>=0;i--){
+    const pk=pickups[i]; pk.x-=speed; pk.t++;
+    const pkh={x:pk.x+1,y:pk.y+1,w:pk.w-2,h:pk.h-2};
+    if(aabb(ph,pkh)){
+      carb=Math.min(100,carb+pk.val); burst(pk.x+5,pk.y+5,C.YLW,9);
+      pickups.splice(i,1); sfxPickup(); continue;
+    }
+    if(pk.x<-15) pickups.splice(i,1);
+  }
+  // particles
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.12; p.life--;
+    if(p.life<=0) parts.splice(i,1);
+  }
+}
+
+// ── DRAW ──────────────────────────────────────────────────────────────────
+function draw(){
+  cx.clearRect(0,0,NW,NH);
+  if(mode==='title'){drawTitle();return;}
+  if(mode==='instructions'){drawInstructions();return;}
+  if(mode==='over'){bgComo();drawGameOver();return;}
+  if(mode==='win'){bgVatican();drawWin();return;}
+
+  BG_FNS[lv]();
+  for(const pk of pickups) drawPickup(pk);
+  for(const e of enemies) e.type==='mafia'?drawMafia(e):drawZombie(e);
+  drawPlayer();
+  for(const p of parts){
+    cx.globalAlpha=Math.max(0,p.life/40); r(p.x,p.y,2,2,p.col);
+  }
+  cx.globalAlpha=1;
+  drawHUD();
+  drawLevelBanner();
+  if(mode==='levelclear') drawLevelClear();
+}
+
+// ── INPUT ─────────────────────────────────────────────────────────────────
+function jump(){
+  if(mode==='play'&&P.gnd){P.vy=JF;P.gnd=false;sfxJump();}
+}
+function action(){
+  getAC(); // unlock audio context on first interaction
+  if(mode==='play'){jump();return;}
+  if(mode==='title'){startGame();return;}
+  if(mode==='instructions'){initLevel(0);return;}
+  if(mode==='levelstart'){mode='play';return;}
+  if(mode==='over'){score=0;startGame();return;}
+  if(mode==='win'){score=0;startGame();return;}
+  if(mode==='levelclear'&&lvClearTick>40){nextLevel();return;}
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'||e.code==='ArrowUp'){e.preventDefault();jump();}
+  if(e.code==='Enter'){e.preventDefault();action();}
+});
+cv.addEventListener('click',()=>action());
+cv.addEventListener('touchstart',e=>{e.preventDefault();action();},{passive:false});
+
+// ── BOOT ──────────────────────────────────────────────────────────────────
+// init clouds/buildings for title screen
+clouds=Array.from({length:5},(_,i)=>({x:i*70+10,y:18+(i%3)*12,w:32+(i*7)%22}));
+bldgs=Array.from({length:8},(_,i)=>({x:i*45,y:GY-35-(i*13)%46,w:22+(i*9)%19,c:[C.DGY,C.BLU,C.MAG,C.DGY,C.CYN][i%5]}));
+gdots=Array.from({length:20},(_,i)=>({x:i*18}));
+
+(function loop(){update();draw();requestAnimationFrame(loop);})();
+</script>
+</body>
+</html>
