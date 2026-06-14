@@ -561,11 +561,17 @@ function update(){
 // ── FULLSCREEN ────────────────────────────────────────────────────────────
 const FS_BTN={x:NW-36,y:1,w:34,h:9};
 function toggleFS(){
-  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
-  else document.exitFullscreen();
+  const el=document.documentElement;
+  const isFS=document.fullscreenElement||document.webkitFullscreenElement;
+  if(!isFS){
+    (el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||function(){}).call(el);
+  } else {
+    (document.exitFullscreen||document.webkitExitFullscreen||document.mozCancelFullScreen||function(){}).call(document);
+  }
 }
+function isFS(){ return !!(document.fullscreenElement||document.webkitFullscreenElement); }
 function drawFSBtn(){
-  const fs=!!document.fullscreenElement;
+  const fs=isFS();
   // DOS button: dark bg, highlight top-left, shadow bottom-right
   r(FS_BTN.x,   FS_BTN.y,   FS_BTN.w,   FS_BTN.h,   C.DGY);
   r(FS_BTN.x,   FS_BTN.y,   FS_BTN.w,   1,           fs?C.DGY:C.LGY);
