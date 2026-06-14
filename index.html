@@ -36,14 +36,22 @@ const C = {
 const NW=320, NH=200;
 const cv = document.getElementById('c');
 const cx = cv.getContext('2d');
+let scale=1;
 function resize() {
-  const s = Math.max(1, Math.min(window.innerWidth/NW, window.innerHeight/NH));
-  cv.width=Math.round(NW*s); cv.height=Math.round(NH*s);
-  cx.setTransform(s,0,0,s,0,0);
+  scale = Math.max(1, Math.min(window.innerWidth/NW, window.innerHeight/NH));
+  cv.width=Math.round(NW*scale); cv.height=Math.round(NH*scale);
+  cx.setTransform(scale,0,0,scale,0,0);
   cx.imageSmoothingEnabled=false;
 }
 resize();
 window.addEventListener('resize', resize);
+
+// ── ALBUM COVERS ──────────────────────────────────────────────────────────
+const IMG1=new Image(); IMG1.src='tsi1.png';
+const IMG2=new Image(); IMG2.src='tsi2.png';
+// CTA click zones (canvas coords): covers + label below
+const CZ1={x:65, y:38, w:80, h:106, url:'https://vincenzosalvia.bandcamp.com/album/they-speak-italian-deluxe-edition'};
+const CZ2={x:175,y:38, w:80, h:106, url:'https://vincenzosalvia.bandcamp.com/album/they-speak-italian-2'};
 
 // ── AUDIO ─────────────────────────────────────────────────────────────────
 const bgm = new Audio("the-dons-lullaby.mp3");
@@ -423,6 +431,35 @@ function drawInstructions(){
   if(Math.floor(tick/25)%2===0) txtC('[ CLICK / TAP TO START ]',NH-5,C.WHT,8);
 }
 
+function ctaLabel(img,zone,line1,line2){
+  cx.imageSmoothingEnabled=true;
+  if(img.complete&&img.naturalWidth>0) cx.drawImage(img,zone.x,zone.y,80,80);
+  else r(zone.x,zone.y,80,80,C.DGY);
+  cx.imageSmoothingEnabled=false;
+  // cyan border
+  r(zone.x-1,zone.y-1,82,1,C.CYN); r(zone.x-1,zone.y+80,82,1,C.CYN);
+  r(zone.x-1,zone.y-1,1,82,C.CYN); r(zone.x+80,zone.y-1,1,82,C.CYN);
+  // title
+  cx.fillStyle=C.LCY; cx.font="6px 'Courier New',monospace"; cx.textAlign='center';
+  cx.fillText(line1,zone.x+40,zone.y+89);
+  cx.fillText(line2,zone.x+40,zone.y+97);
+  // bandcamp button
+  r(zone.x,zone.y+100,80,11,C.BLU);
+  cx.fillStyle=C.WHT; cx.fillText('GET IT ON BANDCAMP',zone.x+40,zone.y+109);
+  cx.textAlign='left';
+}
+function drawCTA(){
+  r(0,0,NW,NH,C.BLK);
+  r(0,0,NW,1,C.YLW); r(0,NH-1,NW,1,C.YLW);
+  txtC('LIKE THE GAME?',12,C.YLW,9);
+  txtC("YOU'LL LOVE THE MUSIC.",24,C.LGY,7);
+  r(10,30,NW-20,1,C.DGY);
+  ctaLabel(IMG1,CZ1,'THEY SPEAK','ITALIAN');
+  ctaLabel(IMG2,CZ2,'THEY SPEAK','ITALIAN 2');
+  r(10,NH-16,NW-20,1,C.DGY);
+  if(Math.floor(tick/25)%2===0) txtC('TAP ELSEWHERE TO PLAY AGAIN',NH-4,C.DGY,6);
+}
+
 function drawGameOver(){
   cx.globalAlpha=0.74; r(0,0,NW,NH,C.BLK); cx.globalAlpha=1;
   r(30,52,NW-60,100,C.BLK);
@@ -451,7 +488,7 @@ function drawWin(){
 function update(){
   tick++;
   if(mode==='levelclear'){ lvClearTick++; return; }
-  if(mode==='levelstart'||mode==='instructions'||mode==='title'||mode==='over'||mode==='win') return;
+  if(mode==='levelstart'||mode==='instructions'||mode==='title'||mode==='over'||mode==='win'||mode==='cta') return;
 
   dist+=speed;
   score=Math.floor(dist/8)+Math.floor(carb);
@@ -528,6 +565,7 @@ function draw(){
   cx.clearRect(0,0,NW,NH);
   if(mode==='title'){drawTitle();return;}
   if(mode==='instructions'){drawInstructions();return;}
+  if(mode==='cta'){drawCTA();return;}
   if(mode==='over'){bgComo();drawGameOver();return;}
   if(mode==='win'){bgVatican();drawWin();return;}
 
@@ -554,17 +592,33 @@ function action(){
   if(mode==='title'){startGame();return;}
   if(mode==='instructions'){initLevel(0);return;}
   if(mode==='levelstart'){mode='play';return;}
-  if(mode==='over'){score=0;startGame();return;}
-  if(mode==='win'){score=0;startGame();return;}
+  if(mode==='over'){mode='cta';tick=0;return;}
+  if(mode==='win'){mode='cta';tick=0;return;}
   if(mode==='levelclear'&&lvClearTick>40){nextLevel();return;}
 }
 
+function getCanvasXY(clientX,clientY){
+  const rect=cv.getBoundingClientRect();
+  return {x:(clientX-rect.left)/scale, y:(clientY-rect.top)/scale};
+}
+function inZone(px,py,z){ return px>=z.x&&px<=z.x+z.w&&py>=z.y&&py<=z.y+z.h; }
+function handlePointer(clientX,clientY){
+  getAC();
+  if(mode==='cta'){
+    const {x,y}=getCanvasXY(clientX,clientY);
+    if(inZone(x,y,CZ1)){window.open(CZ1.url,'_blank');return;}
+    if(inZone(x,y,CZ2)){window.open(CZ2.url,'_blank');return;}
+    score=0;startGame();return;
+  }
+  action();
+}
 document.addEventListener('keydown',e=>{
   if(e.code==='Space'||e.code==='ArrowUp'){e.preventDefault();jump();}
-  if(e.code==='Enter'){e.preventDefault();action();}
+  if(e.code==='Enter'){e.preventDefault();
+    if(mode==='cta'){score=0;startGame();}else action();}
 });
-cv.addEventListener('click',()=>action());
-cv.addEventListener('touchstart',e=>{e.preventDefault();action();},{passive:false});
+cv.addEventListener('click',e=>handlePointer(e.clientX,e.clientY));
+cv.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];handlePointer(t.clientX,t.clientY);},{passive:false});
 
 // ── BOOT ──────────────────────────────────────────────────────────────────
 // init clouds/buildings for title screen
