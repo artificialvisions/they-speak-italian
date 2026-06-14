@@ -287,13 +287,11 @@ const BG_FNS=[bgComo,bgMarket,bgBeach,bgVatican];
 function drawHUD(){
   r(0,0,NW,11,C.BLK); r(0,11,NW,1,C.DGY);
   txt('THEY SPEAK ITALIAN',3,9,C.YLW,8);
-  // level progress bar top-right
-  const PW=80, prog=Math.min(1,dist/LEVEL_GOAL);
-  r(NW-PW-2,1,PW,9,C.DGY);
-  r(NW-PW-2,1,Math.floor(prog*PW),9,C.LBL);
-  const arrowX=(NW-PW-2+Math.floor(prog*PW)-3)|0;
-  txt('>',arrowX,9,C.YLW,8);
-  txt('L'+(lv+1),NW-PW-12,9,C.LCY,8);
+  // level progress bar top-right (leaves room for FS button)
+  const PW=50, prog=Math.min(1,dist/LEVEL_GOAL);
+  r(NW-PW-38,1,PW,9,C.DGY);
+  r(NW-PW-38,1,Math.floor(prog*PW),9,C.LBL);
+  txt('L'+(lv+1),NW-PW-56,9,C.LCY,8);
 
   r(0,NH-13,NW,13,C.BLK); r(0,NH-13,NW,1,C.DGY);
   txt('CARBS:',2,NH-3,C.LGY,8);
@@ -560,6 +558,25 @@ function update(){
   }
 }
 
+// ── FULLSCREEN ────────────────────────────────────────────────────────────
+const FS_BTN={x:NW-36,y:1,w:34,h:9};
+function toggleFS(){
+  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen();
+}
+function drawFSBtn(){
+  const fs=!!document.fullscreenElement;
+  // DOS button: dark bg, highlight top-left, shadow bottom-right
+  r(FS_BTN.x,   FS_BTN.y,   FS_BTN.w,   FS_BTN.h,   C.DGY);
+  r(FS_BTN.x,   FS_BTN.y,   FS_BTN.w,   1,           fs?C.DGY:C.LGY);
+  r(FS_BTN.x,   FS_BTN.y,   1,           FS_BTN.h,   fs?C.DGY:C.LGY);
+  r(FS_BTN.x,   FS_BTN.y+FS_BTN.h-1, FS_BTN.w, 1,   fs?C.LGY:C.BLK);
+  r(FS_BTN.x+FS_BTN.w-1, FS_BTN.y, 1, FS_BTN.h,     fs?C.LGY:C.BLK);
+  cx.fillStyle=C.WHT; cx.font="6px 'Courier New',monospace"; cx.textAlign='center';
+  cx.fillText(fs?'[ EXIT ]':'[ FULL ]', FS_BTN.x+FS_BTN.w/2, FS_BTN.y+7);
+  cx.textAlign='left';
+}
+
 // ── DRAW ──────────────────────────────────────────────────────────────────
 function draw(){
   cx.clearRect(0,0,NW,NH);
@@ -580,6 +597,7 @@ function draw(){
   drawHUD();
   drawLevelBanner();
   if(mode==='levelclear') drawLevelClear();
+  drawFSBtn();
 }
 
 // ── INPUT ─────────────────────────────────────────────────────────────────
@@ -604,8 +622,9 @@ function getCanvasXY(clientX,clientY){
 function inZone(px,py,z){ return px>=z.x&&px<=z.x+z.w&&py>=z.y&&py<=z.y+z.h; }
 function handlePointer(clientX,clientY){
   getAC();
+  const {x,y}=getCanvasXY(clientX,clientY);
+  if(inZone(x,y,FS_BTN)){toggleFS();return;}
   if(mode==='cta'){
-    const {x,y}=getCanvasXY(clientX,clientY);
     if(inZone(x,y,CZ1)){window.open(CZ1.url,'_blank');return;}
     if(inZone(x,y,CZ2)){window.open(CZ2.url,'_blank');return;}
     score=0;startGame();return;
